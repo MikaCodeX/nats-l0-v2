@@ -24,7 +24,7 @@ type OrderUID struct {
 func New() *Store {
 	db, err := pgxpool.New(context.Background(), "postgres://postgres:1234@localhost:5432/db_shop")
 	if err != nil {
-		log.Fatalf("Ошибка подключения", err)
+		log.Fatalf("Ошибка подключения: %s", err)
 	}
 	return &Store{
 		db:    db,
@@ -85,4 +85,8 @@ func getOrderUidFromJson(m []byte) string {
 		log.Fatalf("Error parsing JSON: %s", err3)
 	}
 	return result.OrderUID
+}
+
+func (s *Store) Close() {
+	s.db.Close()
 }

@@ -21,7 +21,7 @@ func main() {
 	endpoint := rest.New(storage)
 	go endpoint.Run()
 	ctrlC()
-
+	storage.Close()
 	sub.Close()
 
 }
