@@ -1,159 +1,95 @@
 package store
 
 import (
-	"sync"
-	"time"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"strings"
 
-	"github.com/rs/zerolog/log"
+	"github.com/jackc/pgx/v4"
 )
 
-type Cache struct {
-	sync.RWMutex
-	defaultExpiration time.Duration
-	cleanupInterval   time.Duration
-	items             map[string]Item
+type Store struct {
+	cache *Cache
 }
 
-type Item struct {
-	Value      []byte
-	Created    time.Time
-	Expiration int64
+type OrderUID struct {
+	OrderUID string `json:"order_uid"`
 }
 
-func NewCache(defaultExpiration, cleanupInterval time.Duration) *Cache {
-
-	// инициализируем карту(map) в паре ключ(string)/значение(Item)
-	items := make(map[string]Item)
-
-	cache := Cache{
-		items:             items,
-		defaultExpiration: defaultExpiration,
-		cleanupInterval:   cleanupInterval,
+func New() *Store {
+	return &Store{
+		cache: NewCache(),
 	}
-
-	// Если интервал очистки больше 0, запускаем GC (удаление устаревших элементов)
-	if cleanupInterval > 0 {
-		cache.StartGC() // данный метод рассматривается ниже
-	}
-
-	return &cache
 }
 
-func (c *Cache) Set(key string, value []byte, duration time.Duration) {
-
-	var expiration int64
-
-	// Если продолжительность жизни равна 0 - используется значение по-умолчанию
-	if duration == 0 {
-		duration = c.defaultExpiration
+func (s *Store) SaveOrder(msg []byte) {
+	conn, err := pgx.Connect(context.Background(), "postgres://postgres:1234@localhost:5432/db_shop")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
+		os.Exit(1)
 	}
+	log.Println("Подрубились к дб")
+	defer conn.Close(context.Background())
 
-	// Устанавливаем время истечения кеша
-	if duration > 0 {
-		expiration = time.Now().Add(duration).UnixNano()
+	msg1 := msg
+	order_uid := getOrderUidFromJson(msg1)
+
+	_, err = conn.Exec(context.Background(), "INSERT INTO orders (order_uid,order_info) VALUES($1,$2)", order_uid, string(msg))
+	log.Printf("Записали заказ: %s в базу данных", order_uid)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to insert data: %v\n", err)
 	}
-
-	c.Lock()
-
-	defer c.Unlock()
-
-	c.items[key] = Item{
-		Value:      value,
-		Expiration: expiration,
-		Created:    time.Now(),
-	}
+	log.Println("Берем старые заказы из бд и добавляем в кэш")
+	s.GetOrderfromDB(conn)
+	log.Println("Добавляем новый заказ в кэш")
+	s.cache.Set(order_uid, msg)
+	log.Printf("Заказ с номером: %s сохранен в кэш", order_uid)
+	s.GetOrderfromDB(conn)
 
 }
+func (s *Store) GetOrder(id string) ([]byte, error) {
+	order, check := s.cache.Get(id)
 
-func (c *Cache) Get(key string) ([]byte, bool) {
+	if !check {
+		return nil, errors.New("такого заказа нету")
 
-	c.RLock()
-
-	defer c.RUnlock()
-
-	item, found := c.items[key]
-
-	// ключ не найден
-	if !found {
-		return nil, false
 	}
 
-	// Проверка на установку времени истечения, в противном случае он бессрочный
-	if item.Expiration > 0 {
+	return order, nil
+}
 
-		// Если в момент запроса кеш устарел возвращаем nil
-		if time.Now().UnixNano() > item.Expiration {
-			return nil, false
+func (s *Store) GetOrderfromDB(conn *pgx.Conn) []byte {
+	var sliceOrders []byte
+	rows, err := conn.Query(context.Background(), "SELECT order_uid, order_info FROM orders")
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var orderUID string
+		var orderInfo []byte
+		err = rows.Scan(&orderUID, &orderInfo)
+		if err != nil {
+			panic(err)
 		}
+		s.cache.Set(orderUID, orderInfo)
 
 	}
 
-	return item.Value, true
+	return sliceOrders
 }
 
-func (c *Cache) Delete(key string) error {
-
-	c.Lock()
-
-	defer c.Unlock()
-
-	if _, found := c.items[key]; !found {
-		log.Print("Key not found")
+func getOrderUidFromJson(m []byte) string {
+	replaceValue := strings.ReplaceAll(string(m), "`", "\"")
+	var result OrderUID
+	err3 := json.Unmarshal([]byte(replaceValue), &result)
+	if err3 != nil {
+		log.Fatalf("Error parsing JSON: %s", err3)
 	}
-
-	delete(c.items, key)
-
-	return nil
-}
-
-func (c *Cache) StartGC() {
-	go c.GC()
-}
-
-func (c *Cache) GC() {
-
-	for {
-		// ожидаем время установленное в cleanupInterval
-		<-time.After(c.cleanupInterval)
-
-		if c.items == nil {
-			return
-		}
-
-		// Ищем элементы с истекшим временем жизни и удаляем из хранилища
-		if keys := c.expiredKeys(); len(keys) != 0 {
-			c.clearItems(keys)
-
-		}
-
-	}
-
-}
-
-// expiredKeys возвращает список "просроченных" ключей
-func (c *Cache) expiredKeys() (keys []string) {
-
-	c.RLock()
-
-	defer c.RUnlock()
-
-	for k, i := range c.items {
-		if time.Now().UnixNano() > i.Expiration && i.Expiration > 0 {
-			keys = append(keys, k)
-		}
-	}
-
-	return
-}
-
-// clearItems удаляет ключи из переданного списка, в нашем случае "просроченные"
-func (c *Cache) clearItems(keys []string) {
-
-	c.Lock()
-
-	defer c.Unlock()
-
-	for _, k := range keys {
-		delete(c.items, k)
-	}
+	return result.OrderUID
 }

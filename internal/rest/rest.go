@@ -1,10 +1,8 @@
 package rest
 
 import (
-	"fmt"
-	"net/http"
-
 	"awesome/internal/store"
+	"net/http"
 
 	"github.com/rs/zerolog/log"
 )
@@ -29,14 +27,14 @@ func (r *Rest) Run() {
 }
 
 func (r *Rest) handler(w http.ResponseWriter, r1 *http.Request) {
-	orderID := r1.URL.Query().Get("orderID")
+	id := r1.URL.Query().Get("orderID")
 
-	err, order := r.store.GetOrder(orderID)
+	order, err := r.store.GetOrder(id)
 	if err != nil {
-		log.Print("Ошибка доставки")
+		log.Err(err).Msg("")
 		w.WriteHeader(404)
 		w.Write(msgNoData)
 		return
 	}
-	fmt.Fprintf(w, "Информация о вашем заказе:\n%s!", order)
+	w.Write(order)
 }
