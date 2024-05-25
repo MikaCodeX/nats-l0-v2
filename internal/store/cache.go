@@ -17,8 +17,6 @@ type Store struct {
 	cache *Cache
 }
 
-var cacheForHttp *Cache
-
 type OrderUID struct {
 	OrderUID string `json:"order_uid"`
 }
@@ -52,7 +50,7 @@ func (s *Store) SaveOrder(msg []byte) {
 
 }
 func (s *Store) GetOrder(id string) ([]byte, error) {
-	order, check := cacheForHttp.Get(id)
+	order, check := s.cache.Get(id)
 
 	if !check {
 		return nil, errors.New("такого заказа нету")
