@@ -9,10 +9,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Store struct {
+	db    *pgxpool.Pool
 	cache *Cache
 }
 
@@ -21,34 +22,27 @@ type OrderUID struct {
 }
 
 func New() *Store {
+	db, err := pgxpool.New(context.Background(), "postgres://postgres:1234@localhost:5432/db_shop")
+	if err != nil {
+		log.Fatalf("Ошибка подключения", err)
+	}
 	return &Store{
+		db:    db,
 		cache: NewCache(),
 	}
 }
 
 func (s *Store) SaveOrder(msg []byte) {
-	conn, err := pgx.Connect(context.Background(), "postgres://postgres:1234@localhost:5432/db_shop")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
-		os.Exit(1)
-	}
-	log.Println("Подрубились к дб")
-	defer conn.Close(context.Background())
-
 	msg1 := msg
 	order_uid := getOrderUidFromJson(msg1)
-
-	_, err = conn.Exec(context.Background(), "INSERT INTO orders (order_uid,order_info) VALUES($1,$2)", order_uid, string(msg))
+	_, err := s.db.Exec(context.Background(), "INSERT INTO orders (order_uid,order_info) VALUES($1,$2)", order_uid, string(msg))
 	log.Printf("Записали заказ: %s в базу данных", order_uid)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Unable to insert data: %v\n", err)
 	}
-	log.Println("Берем старые заказы из бд и добавляем в кэш")
-	s.GetOrderfromDB(conn)
 	log.Println("Добавляем новый заказ в кэш")
 	s.cache.Set(order_uid, msg)
 	log.Printf("Заказ с номером: %s сохранен в кэш", order_uid)
-	s.GetOrderfromDB(conn)
 
 }
 func (s *Store) GetOrder(id string) ([]byte, error) {
@@ -62,9 +56,9 @@ func (s *Store) GetOrder(id string) ([]byte, error) {
 	return order, nil
 }
 
-func (s *Store) GetOrderfromDB(conn *pgx.Conn) []byte {
-	var sliceOrders []byte
-	rows, err := conn.Query(context.Background(), "SELECT order_uid, order_info FROM orders")
+func (s *Store) GetOrderfromDB() {
+
+	rows, err := s.db.Query(context.Background(), "SELECT order_uid, order_info FROM orders")
 	if err != nil {
 		panic(err)
 	}
@@ -81,7 +75,6 @@ func (s *Store) GetOrderfromDB(conn *pgx.Conn) []byte {
 
 	}
 
-	return sliceOrders
 }
 
 func getOrderUidFromJson(m []byte) string {

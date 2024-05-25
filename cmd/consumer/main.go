@@ -14,7 +14,7 @@ import (
 
 func main() {
 	storage := store.New()
-
+	storage.GetOrderfromDB()
 	sub := sub.New(storage)
 	sub.Run()
 
